@@ -1,6 +1,35 @@
 import type { SearchResult } from "@/types";
 
 /**
+ * Merge and deduplicate search results from multiple queries
+ * @param results1 - First set of search results
+ * @param results2 - Second set of search results
+ * @returns Merged array with duplicates removed (by URL) and sorted by score
+ */
+export function mergeSearchResults(
+  results1: SearchResult[],
+  results2: SearchResult[]
+): SearchResult[] {
+  const urlMap = new Map<string, SearchResult>();
+
+  // Add all results from first set
+  for (const result of results1) {
+    urlMap.set(result.url, result);
+  }
+
+  // Add results from second set, keeping higher score if duplicate URL
+  for (const result of results2) {
+    const existing = urlMap.get(result.url);
+    if (!existing || result.score > existing.score) {
+      urlMap.set(result.url, result);
+    }
+  }
+
+  // Convert to array and sort by score (descending)
+  return Array.from(urlMap.values()).sort((a, b) => b.score - a.score);
+}
+
+/**
  * Search using Tavily API and return formatted results
  * @param query - The search query string
  * @returns Array of search results with title, URL, content, and score

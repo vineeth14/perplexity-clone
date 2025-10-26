@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, FormEvent, useRef, type ReactElement } from "react";
-import type { SearchResult } from "@/types";
+import type { SearchResult, ConversationEntry } from "@/types";
 
 export default function Home() {
   const [query, setQuery] = useState("");
@@ -13,6 +13,9 @@ export default function Home() {
   const [sourcesExpanded, setSourcesExpanded] = useState(false);
   const [highlightedSource, setHighlightedSource] = useState<number | null>(null);
   const [hoveredCitation, setHoveredCitation] = useState<number | null>(null);
+  const [conversationHistory, setConversationHistory] = useState<ConversationEntry[]>([]);
+  const [currentReformulatedQuery, setCurrentReformulatedQuery] = useState<string | null>(null);
+  const [currentQuery, setCurrentQuery] = useState<string>("");
   const sourcesContainerRef = useRef<HTMLDivElement>(null);
 
   const handleCitationClick = (citationIndex: number): void => {
@@ -36,11 +39,16 @@ export default function Home() {
     }, sourcesExpanded ? 0 : 100);
   };
 
-  const renderAnswerWithCitations = (text: string): ReactElement[] => {
+  const renderAnswerWithCitations = (text: string, citationSources?: SearchResult[]): ReactElement[] => {
+    if (!text) return [];
+
     const parts: ReactElement[] = [];
     const citationRegex = /\[(\d+)\]/g;
     let lastIndex = 0;
     let match;
+
+    // Use provided sources or fall back to current sources state
+    const sourcesToUse = citationSources || sources;
 
     while ((match = citationRegex.exec(text)) !== null) {
       const fullMatch = match[0];
@@ -50,7 +58,7 @@ export default function Home() {
       // Add text before the citation
       if (matchIndex > lastIndex) {
         parts.push(
-          <span key={`text-${lastIndex}`}>
+          <span key={`text-${lastIndex}-${matchIndex}`}>
             {text.slice(lastIndex, matchIndex)}
           </span>
         );
@@ -58,7 +66,7 @@ export default function Home() {
 
       // Add the citation as a clickable element
       parts.push(
-        <sup key={`citation-${matchIndex}`} className="relative inline-block">
+        <sup key={`citation-${matchIndex}-${citationNumber}`} className="relative inline-block">
           <button
             onClick={() => handleCitationClick(citationNumber - 1)}
             onMouseEnter={() => setHoveredCitation(citationNumber - 1)}
@@ -69,7 +77,7 @@ export default function Home() {
             {citationNumber}
           </button>
           {hoveredCitation === citationNumber - 1 && (() => {
-            const source = sources[citationNumber - 1];
+            const source = sourcesToUse[citationNumber - 1];
             if (!source) return null;
             return (
               <div className="absolute z-50 bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-64 p-3 bg-gray-900 text-white text-xs rounded-lg shadow-lg pointer-events-none">
@@ -91,7 +99,7 @@ export default function Home() {
 
     // Add remaining text after last citation
     if (lastIndex < text.length) {
-      parts.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex)}</span>);
+      parts.push(<span key={`text-end-${lastIndex}`}>{text.slice(lastIndex)}</span>);
     }
 
     return parts;
@@ -105,12 +113,17 @@ export default function Home() {
       return;
     }
 
-    // Reset state
+    const submittedQuery = query.trim();
+
+    // Reset state for new query
+    setCurrentQuery(submittedQuery);
     setError(null);
     setSources([]);
     setAnswer("");
+    setCurrentReformulatedQuery(null);
     setLoading(true);
     setLoadingState("searching");
+    setQuery(""); // Clear input box
 
     try {
       const response = await fetch("/api/search", {
@@ -118,7 +131,10 @@ export default function Home() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ query: query.trim() }),
+        body: JSON.stringify({
+          query: submittedQuery,
+          conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
+        }),
       });
 
       if (!response.ok) {
@@ -134,6 +150,11 @@ export default function Home() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+
+      // Track values locally for adding to history
+      let finalAnswer = "";
+      let finalSources: SearchResult[] = [];
+      let finalReformulatedQuery: string | null = null;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -151,10 +172,15 @@ export default function Home() {
             try {
               const parsed = JSON.parse(data);
 
-              if (parsed.type === "sources") {
+              if (parsed.type === "reformulated_query") {
+                finalReformulatedQuery = parsed.query;
+                setCurrentReformulatedQuery(parsed.query);
+              } else if (parsed.type === "sources") {
+                finalSources = parsed.sources;
                 setSources(parsed.sources);
                 setLoadingState("generating");
               } else if (parsed.type === "text") {
+                finalAnswer += parsed.content;
                 setAnswer((prev) => prev + parsed.content);
               } else if (parsed.type === "done") {
                 // Stream completed successfully
@@ -169,6 +195,23 @@ export default function Home() {
         }
       }
 
+      // After successful completion, add to conversation history
+      setConversationHistory((prev) => [
+        ...prev,
+        {
+          query: submittedQuery,
+          answer: finalAnswer,
+          sources: finalSources,
+          reformulatedQuery: finalReformulatedQuery || undefined,
+        },
+      ]);
+
+      // Clear current state after adding to history
+      setCurrentQuery("");
+      setAnswer("");
+      setSources([]);
+      setCurrentReformulatedQuery(null);
+
       setLoadingState(null);
       setLoading(false);
     } catch (err) {
@@ -181,10 +224,179 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-gradient-to-b from-gray-50 to-white p-8">
       <div className="max-w-4xl mx-auto">
-        <h1 className="text-4xl font-bold mb-8 text-center">Perplexity Clone</h1>
+        <div className="flex items-center justify-between mb-8">
+          <h1 className="text-4xl font-bold text-center flex-1">Perplexity</h1>
+          {conversationHistory.length > 0 && (
+            <button
+              onClick={() => {
+                setConversationHistory([]);
+                setSources([]);
+                setAnswer("");
+                setCurrentReformulatedQuery(null);
+                setCurrentQuery("");
+                setQuery("");
+              }}
+              className="px-4 py-2 text-sm bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+            >
+              Clear conversation
+            </button>
+          )}
+        </div>
 
-        {/* Search Form */}
-        <form onSubmit={handleSubmit} className="mb-8">
+        {/* Conversation History */}
+        {conversationHistory.length > 0 && (
+          <div className="mb-8 space-y-8">
+            {conversationHistory.map((entry, index) => (
+              <div key={index}>
+                {/* Previous Query */}
+                <div className="mb-4">
+                  <div className="text-lg font-semibold text-gray-900 mb-1">{entry.query}</div>
+                  {entry.reformulatedQuery && (
+                    <div className="text-xs text-gray-500 italic">
+                      Refined: {entry.reformulatedQuery}
+                    </div>
+                  )}
+                </div>
+
+                {/* Previous Sources (collapsed) */}
+                {entry.sources.length > 0 && (
+                  <div className="mb-4">
+                    <span className="px-3 py-1.5 bg-blue-50 text-blue-700 rounded-full text-sm font-medium">
+                      📚 {entry.sources.length} source{entry.sources.length !== 1 ? "s" : ""}
+                    </span>
+                  </div>
+                )}
+
+                {/* Previous Answer */}
+                <div className="prose prose-blue max-w-none p-6 bg-white border border-gray-200 rounded-lg">
+                  <div className="text-gray-800 leading-relaxed">
+                    {renderAnswerWithCitations(entry.answer, entry.sources)}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Current Query and Answer Section */}
+        {currentQuery && (loading || sources.length > 0 || answer) && (
+          <div className="mb-8">
+            {/* Current Query Display */}
+            <div className="mb-4">
+              <div className="text-lg font-semibold text-gray-900 mb-1">{currentQuery}</div>
+              {currentReformulatedQuery && (
+                <div className="text-xs text-gray-500 italic">
+                  Refined: {currentReformulatedQuery}
+                </div>
+              )}
+            </div>
+
+            {/* Loading States */}
+            {loadingState === "searching" && (
+              <div className="text-center text-gray-600 py-8">
+                <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
+                <p>Searching...</p>
+              </div>
+            )}
+
+            {/* Sources Display */}
+            {sources.length > 0 && (
+              <div className="mb-4" ref={sourcesContainerRef}>
+                {!sourcesExpanded ? (
+                  <div className="flex items-center gap-3">
+                    <span className="px-3 py-1.5 bg-blue-50 text-blue-700 rounded-full text-sm font-medium">
+                      📚 {sources.length} source{sources.length !== 1 ? "s" : ""}
+                    </span>
+                    <button
+                      onClick={() => setSourcesExpanded(true)}
+                      className="text-sm text-blue-600 hover:text-blue-700 hover:underline font-medium"
+                    >
+                      Show sources
+                    </button>
+                  </div>
+                ) : (
+                  <div className="transition-all duration-300 ease-in-out">
+                    <div className="flex items-center justify-between mb-4">
+                      <h2 className="text-xl font-semibold">Sources</h2>
+                      <button
+                        onClick={() => setSourcesExpanded(false)}
+                        className="text-sm text-blue-600 hover:text-blue-700 hover:underline font-medium"
+                      >
+                        Hide sources
+                      </button>
+                    </div>
+                    <div className="grid gap-4">
+                      {sources.map((source, index) => (
+                        <div
+                          key={index}
+                          data-source-index={index}
+                          className={`p-4 border border-gray-200 rounded-lg hover:shadow-md transition-all bg-white ${
+                            highlightedSource === index
+                              ? "ring-2 ring-blue-500 shadow-lg"
+                              : ""
+                          }`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <span className="flex-shrink-0 w-6 h-6 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-sm font-medium">
+                              {index + 1}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <h3 className="font-medium text-gray-900 mb-1">
+                                {source.title}
+                              </h3>
+                              <a
+                                href={source.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-sm text-blue-600 hover:underline block mb-2 truncate"
+                              >
+                                {source.url}
+                              </a>
+                              <p className="text-sm text-gray-600">
+                                {source.content.length > 150
+                                  ? `${source.content.slice(0, 150)}...`
+                                  : source.content}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Loading State for Answer Generation */}
+            {loadingState === "generating" && !answer && (
+              <div className="text-center text-gray-600 py-4">
+                <div className="inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mb-2"></div>
+                <p>Generating answer...</p>
+              </div>
+            )}
+
+            {/* AI Answer Display */}
+            {answer && (
+              <div>
+                <div className="prose prose-blue max-w-none p-6 bg-white border border-gray-200 rounded-lg">
+                  <div className="text-gray-800 leading-relaxed">
+                    {renderAnswerWithCitations(answer)}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Error Display */}
+        {error && (
+          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
+            <strong>Error:</strong> {error}
+          </div>
+        )}
+
+        {/* Search Form - At Bottom */}
+        <form onSubmit={handleSubmit} className="mt-8">
           <div className="flex gap-2">
             <input
               type="text"
@@ -203,109 +415,6 @@ export default function Home() {
             </button>
           </div>
         </form>
-
-        {/* Error Display */}
-        {error && (
-          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
-            <strong>Error:</strong> {error}
-          </div>
-        )}
-
-        {/* Loading States */}
-        {loadingState === "searching" && (
-          <div className="text-center text-gray-600 py-8">
-            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
-            <p>Searching...</p>
-          </div>
-        )}
-
-        {/* Sources Display */}
-        {sources.length > 0 && (
-          <div className="mb-8" ref={sourcesContainerRef}>
-            {!sourcesExpanded ? (
-              <div className="flex items-center gap-3">
-                <span className="px-3 py-1.5 bg-blue-50 text-blue-700 rounded-full text-sm font-medium">
-                  📚 {sources.length} source{sources.length !== 1 ? "s" : ""}
-                </span>
-                <button
-                  onClick={() => setSourcesExpanded(true)}
-                  className="text-sm text-blue-600 hover:text-blue-700 hover:underline font-medium"
-                >
-                  Show sources
-                </button>
-              </div>
-            ) : (
-              <div className="transition-all duration-300 ease-in-out">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-xl font-semibold">Sources</h2>
-                  <button
-                    onClick={() => setSourcesExpanded(false)}
-                    className="text-sm text-blue-600 hover:text-blue-700 hover:underline font-medium"
-                  >
-                    Hide sources
-                  </button>
-                </div>
-                <div className="grid gap-4">
-                  {sources.map((source, index) => (
-                    <div
-                      key={index}
-                      data-source-index={index}
-                      className={`p-4 border border-gray-200 rounded-lg hover:shadow-md transition-all bg-white ${
-                        highlightedSource === index
-                          ? "ring-2 ring-blue-500 shadow-lg"
-                          : ""
-                      }`}
-                    >
-                      <div className="flex items-start gap-3">
-                        <span className="flex-shrink-0 w-6 h-6 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-sm font-medium">
-                          {index + 1}
-                        </span>
-                        <div className="flex-1 min-w-0">
-                          <h3 className="font-medium text-gray-900 mb-1">
-                            {source.title}
-                          </h3>
-                          <a
-                            href={source.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-sm text-blue-600 hover:underline block mb-2 truncate"
-                          >
-                            {source.url}
-                          </a>
-                          <p className="text-sm text-gray-600">
-                            {source.content.length > 150
-                              ? `${source.content.slice(0, 150)}...`
-                              : source.content}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Loading State for Answer Generation */}
-        {loadingState === "generating" && !answer && (
-          <div className="text-center text-gray-600 py-4">
-            <div className="inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mb-2"></div>
-            <p>Generating answer...</p>
-          </div>
-        )}
-
-        {/* AI Answer Display */}
-        {answer && (
-          <div className="mb-8">
-            <h2 className="text-xl font-semibold mb-4">Answer</h2>
-            <div className="prose prose-blue max-w-none p-6 bg-white border border-gray-200 rounded-lg">
-              <p className="whitespace-pre-wrap text-gray-800 leading-relaxed">
-                {renderAnswerWithCitations(answer)}
-              </p>
-            </div>
-          </div>
-        )}
       </div>
     </main>
   );

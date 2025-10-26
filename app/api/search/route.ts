@@ -4,24 +4,104 @@ import { z } from "zod";
 
 import { getAIProvider } from "@/lib/ai-provider";
 import { processRawContent } from "@/lib/content-processor";
-import { searchTavily } from "@/lib/search";
+import { searchTavily, mergeSearchResults } from "@/lib/search";
 
-import type { APIError, SearchResult } from "@/types";
+import type { APIError, SearchResult, ConversationEntry } from "@/types";
 
 /**
  * Zod schema for validating search request payload
  */
+const conversationEntrySchema = z.object({
+  query: z.string(),
+  answer: z.string(),
+  sources: z.array(z.any()),
+  reformulatedQuery: z.string().optional(),
+});
+
 const searchRequestSchema = z.object({
   query: z.string().min(1, "Query cannot be empty").trim(),
+  conversationHistory: z.array(conversationEntrySchema).optional(),
 });
+
+/**
+ * Reformulate a query based on the previous query using Gemini
+ * @param query - The user's current query
+ * @param history - Array of previous conversation entries
+ * @param apiKey - Gemini API key
+ * @param model - Gemini model name
+ * @returns Reformulated query string
+ */
+async function reformulateQuery(
+  query: string,
+  history: ConversationEntry[],
+  apiKey: string,
+  model: string
+): Promise<string> {
+  // Only use the most recent query for context
+  const previousQuery = history[history.length - 1]?.query || "";
+
+  const reformulationPrompt = `You are a search query optimization assistant. Your task is to reformulate follow-up questions into comprehensive, standalone search queries.
+
+Previous query: "${previousQuery}"
+Follow-up query: "${query}"
+
+Instructions:
+- If the follow-up query references the previous query (uses words like "it", "that", "more", "they", "this"), reformulate it to be specific and standalone
+- Incorporate the key subject/topic from the previous query into the new query
+- Make the query optimized for web search (clear, specific, complete)
+- If the follow-up query is already standalone and complete, return it as-is
+- Return ONLY the reformulated query text, no explanations
+
+Reformulated search query:`;
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              {
+                text: reformulationPrompt,
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.3,
+          maxOutputTokens: 100,
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Gemini API error: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const reformulated =
+    data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || query;
+
+  return reformulated;
+}
 
 /**
  * Build a context prompt from search results for the AI to use
  * @param query - The user's search query
  * @param results - Array of search results from Tavily
+ * @param conversationHistory - Optional array of previous conversation entries
  * @returns Formatted prompt string with search context
  */
-function buildContextPrompt(query: string, results: SearchResult[]): string {
+function buildContextPrompt(
+  query: string,
+  results: SearchResult[],
+  conversationHistory?: ConversationEntry[]
+): string {
   const sourcesContext = results
     .map((result, index) => {
       const contentToUse = result.fullContent || result.content;
@@ -29,7 +109,16 @@ function buildContextPrompt(query: string, results: SearchResult[]): string {
     })
     .join("\n");
 
-  return `You are a helpful AI assistant that provides concise, well-sourced answers based on search results.
+  let conversationContext = "";
+  if (conversationHistory && conversationHistory.length > 0) {
+    conversationContext = `\n\nPrevious Conversation:\n${conversationHistory
+      .map((entry, i) => {
+        return `Q${i + 1}: ${entry.query}\nA${i + 1}: ${entry.answer}`;
+      })
+      .join("\n\n")}\n`;
+  }
+
+  return `You are a helpful AI assistant that provides concise, well-sourced answers based on search results.${conversationContext}
 
 User Query: ${query}
 
@@ -43,6 +132,7 @@ Instructions:
 - If the search results don't contain enough information, state this briefly
 - Match citation numbers to the source numbers provided above
 - Keep your response brief and to the point
+${conversationHistory && conversationHistory.length > 0 ? "- Consider the conversation context when formulating your answer" : ""}
 
 Answer:`;
 }
@@ -83,12 +173,50 @@ export async function POST(request: NextRequest): Promise<Response> {
       );
     }
 
-    const { query } = validationResult.data;
+    const { query, conversationHistory } = validationResult.data;
 
-    // Step 2: Fetch search results from Tavily
+    // Step 2: Reformulate query if conversation history exists
+    const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    const model = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+
+    if (!apiKey) {
+      return NextResponse.json(
+        {
+          error: "GOOGLE_GENERATIVE_AI_API_KEY is not configured",
+          details: "Please add it to your .env.local file.",
+        } as APIError,
+        { status: 500 }
+      );
+    }
+
+    let reformulatedQuery: string | null = null;
+    if (conversationHistory && conversationHistory.length > 0) {
+      try {
+        reformulatedQuery = await reformulateQuery(
+          query,
+          conversationHistory,
+          apiKey,
+          model
+        );
+      } catch (error) {
+        console.error("Failed to reformulate query:", error);
+        // Continue with original query if reformulation fails
+      }
+    }
+
+    // Step 3: Fetch search results from Tavily
     let searchResults: SearchResult[];
     try {
-      searchResults = await searchTavily(query);
+      if (reformulatedQuery) {
+        // Search with both queries and merge results
+        const [originalResults, reformulatedResults] = await Promise.all([
+          searchTavily(query),
+          searchTavily(reformulatedQuery),
+        ]);
+        searchResults = mergeSearchResults(originalResults, reformulatedResults);
+      } else {
+        searchResults = await searchTavily(query);
+      }
 
       // Process raw content for each result to create richer context
       searchResults = searchResults.map((result) => {
@@ -135,26 +263,28 @@ export async function POST(request: NextRequest): Promise<Response> {
       );
     }
 
-    // Step 3: Build context prompt from search results
-    const prompt = buildContextPrompt(query, searchResults);
+    // Step 4: Build context prompt from search results
+    const prompt = buildContextPrompt(query, searchResults, conversationHistory);
 
-    // Step 4: Stream AI response with sources prepended (using Gemini)
+    // Step 5: Stream AI response with sources prepended (using Gemini)
     try {
-      const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-      const model = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
-
-      if (!apiKey) {
-        throw new Error(
-          "GOOGLE_GENERATIVE_AI_API_KEY is not configured. Please add it to your .env.local file."
-        );
-      }
-
       // Create a custom stream that first sends sources, then the AI response
       const encoder = new TextEncoder();
       const customStream = new ReadableStream({
         async start(controller) {
           try {
-            // Send sources as the first chunk (as JSON)
+            // Send reformulated query if it exists
+            if (reformulatedQuery) {
+              const reformulatedChunk = JSON.stringify({
+                type: "reformulated_query",
+                query: reformulatedQuery,
+              });
+              controller.enqueue(
+                encoder.encode(`data: ${reformulatedChunk}\n\n`)
+              );
+            }
+
+            // Send sources as the second chunk (as JSON)
             const sourcesChunk = JSON.stringify({
               type: "sources",
               sources: searchResults,
@@ -181,7 +311,7 @@ export async function POST(request: NextRequest): Promise<Response> {
                   ],
                   generationConfig: {
                     temperature: 0.7,
-                    maxOutputTokens: 500,
+                    maxOutputTokens: 2048,
                   },
                 }),
               }

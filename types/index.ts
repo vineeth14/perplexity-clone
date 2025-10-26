@@ -21,10 +21,21 @@ export interface Citation {
 }
 
 /**
+ * A single entry in the conversation history
+ */
+export interface ConversationEntry {
+  query: string;
+  answer: string;
+  sources: SearchResult[];
+  reformulatedQuery?: string;
+}
+
+/**
  * Request payload for search API endpoint
  */
 export interface APISearchRequest {
   query: string;
+  conversationHistory?: ConversationEntry[];
 }
 
 /**
