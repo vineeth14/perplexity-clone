@@ -43,7 +43,8 @@ export default function Home() {
     if (!text) return [];
 
     const parts: ReactElement[] = [];
-    const citationRegex = /\[(\d+)\]/g;
+    // Match both single citations [1] and comma-separated lists [1, 2, 3]
+    const citationRegex = /\[(\d+(?:,\s*\d+)*)\]/g;
     let lastIndex = 0;
     let match;
 
@@ -52,8 +53,10 @@ export default function Home() {
 
     while ((match = citationRegex.exec(text)) !== null) {
       const fullMatch = match[0];
-      const citationNumber = parseInt(match[1] || "0", 10);
       const matchIndex = match.index;
+
+      // Parse citation numbers (could be comma-separated like "2, 7")
+      const citationNumbers = (match[1] || "").split(',').map(n => parseInt(n.trim(), 10)).filter(n => !isNaN(n));
 
       // Add text before the citation
       if (matchIndex > lastIndex) {
@@ -64,33 +67,38 @@ export default function Home() {
         );
       }
 
-      // Add the citation as a clickable element
+      // Add citations as separate clickable elements
       parts.push(
-        <sup key={`citation-${matchIndex}-${citationNumber}`} className="relative inline-block">
-          <button
-            onClick={() => handleCitationClick(citationNumber - 1)}
-            onMouseEnter={() => setHoveredCitation(citationNumber - 1)}
-            onMouseLeave={() => setHoveredCitation(null)}
-            className="citation-link inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 mx-0.5 bg-blue-100 text-blue-700 rounded text-xs font-semibold hover:bg-blue-200 hover:text-blue-900 transition-colors cursor-pointer border border-blue-300"
-            aria-label={`View source ${citationNumber}`}
-          >
-            {citationNumber}
-          </button>
-          {hoveredCitation === citationNumber - 1 && (() => {
+        <sup key={`citation-group-${matchIndex}`} className="inline-flex gap-0.5">
+          {citationNumbers.map((citationNumber, idx) => {
             const source = sourcesToUse[citationNumber - 1];
-            if (!source) return null;
             return (
-              <div className="absolute z-50 bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-64 p-3 bg-gray-900 text-white text-xs rounded-lg shadow-lg pointer-events-none">
-                <div className="font-semibold mb-1 break-words">
-                  {source.title}
-                </div>
-                <div className="text-gray-300 break-all text-[10px]">
-                  {source.url}
-                </div>
-                <div className="absolute top-full left-1/2 transform -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900"></div>
-              </div>
+              <span key={`citation-${matchIndex}-${citationNumber}`} className="relative inline-block">
+                <a
+                  href={source?.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onMouseEnter={() => setHoveredCitation(citationNumber - 1)}
+                  onMouseLeave={() => setHoveredCitation(null)}
+                  className="citation-link inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 mx-0.5 bg-blue-100 text-blue-700 rounded text-xs font-semibold hover:bg-blue-200 hover:text-blue-900 transition-colors cursor-pointer border border-blue-300 no-underline"
+                  aria-label={`View source ${citationNumber}`}
+                >
+                  {citationNumber}
+                </a>
+                {hoveredCitation === citationNumber - 1 && source && (
+                  <div className="absolute z-50 bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-64 p-3 bg-gray-900 text-white text-xs rounded-lg shadow-lg pointer-events-none">
+                    <div className="font-semibold mb-1 break-words">
+                      {source.title}
+                    </div>
+                    <div className="text-gray-300 break-all text-[10px]">
+                      {source.url}
+                    </div>
+                    <div className="absolute top-full left-1/2 transform -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900"></div>
+                  </div>
+                )}
+              </span>
             );
-          })()}
+          })}
         </sup>
       );
 
@@ -268,8 +276,8 @@ export default function Home() {
                 )}
 
                 {/* Previous Answer */}
-                <div className="prose prose-blue max-w-none p-6 bg-white border border-gray-200 rounded-lg">
-                  <div className="text-gray-800 leading-relaxed">
+                <div className="prose prose-blue max-w-none p-6 bg-white border border-gray-200 rounded-lg overflow-visible">
+                  <div className="text-gray-800 leading-relaxed overflow-visible">
                     {renderAnswerWithCitations(entry.answer, entry.sources)}
                   </div>
                 </div>
@@ -378,8 +386,8 @@ export default function Home() {
             {/* AI Answer Display */}
             {answer && (
               <div>
-                <div className="prose prose-blue max-w-none p-6 bg-white border border-gray-200 rounded-lg">
-                  <div className="text-gray-800 leading-relaxed">
+                <div className="prose prose-blue max-w-none p-6 bg-white border border-gray-200 rounded-lg overflow-visible">
+                  <div className="text-gray-800 leading-relaxed overflow-visible">
                     {renderAnswerWithCitations(answer)}
                   </div>
                 </div>

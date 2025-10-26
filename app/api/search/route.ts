@@ -128,7 +128,8 @@ ${sourcesContext}
 Instructions:
 - Provide a CONCISE answer (2-3 sentences maximum) using ONLY the information from the search results above
 - Use inline citations in the format [1], [2], etc. to reference the sources
-- Use AT LEAST 2 citations if the sources contain similar or complementary information
+- Use ONLY ONE citation per sentence - place it at the end of the sentence
+- Do NOT use multiple citations like [1, 2] or [1, 2, 3] - only use single citations like [1]
 - If the search results don't contain enough information, state this briefly
 - Match citation numbers to the source numbers provided above
 - Keep your response brief and to the point
