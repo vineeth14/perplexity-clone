@@ -30,7 +30,7 @@ export async function searchTavily(query: string): Promise<SearchResult[]> {
         query: query.trim(),
         search_depth: "basic",
         include_answer: false,
-        include_raw_content: false,
+        include_raw_content: true,
         max_results: 7,
       }),
     });

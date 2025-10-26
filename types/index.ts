@@ -7,6 +7,7 @@ export interface SearchResult {
   content: string;
   score: number;
   raw_content?: string;
+  fullContent?: string;
 }
 
 /**

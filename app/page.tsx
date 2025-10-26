@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, FormEvent } from "react";
+import { useState, FormEvent, useRef, type ReactElement } from "react";
 import type { SearchResult } from "@/types";
 
 export default function Home() {
@@ -10,6 +10,74 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [loadingState, setLoadingState] = useState<"searching" | "generating" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sourcesExpanded, setSourcesExpanded] = useState(false);
+  const [highlightedSource, setHighlightedSource] = useState<number | null>(null);
+  const sourcesContainerRef = useRef<HTMLDivElement>(null);
+
+  const handleCitationClick = (citationIndex: number): void => {
+    // Expand sources if collapsed
+    if (!sourcesExpanded) {
+      setSourcesExpanded(true);
+    }
+
+    // Wait for DOM update if we just expanded
+    setTimeout(() => {
+      const sourceElement = document.querySelector(
+        `[data-source-index="${citationIndex}"]`
+      );
+      if (sourceElement) {
+        sourceElement.scrollIntoView({ behavior: "smooth", block: "center" });
+
+        // Highlight the source
+        setHighlightedSource(citationIndex);
+        setTimeout(() => setHighlightedSource(null), 2000);
+      }
+    }, sourcesExpanded ? 0 : 100);
+  };
+
+  const renderAnswerWithCitations = (text: string): ReactElement[] => {
+    const parts: ReactElement[] = [];
+    const citationRegex = /\[(\d+)\]/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = citationRegex.exec(text)) !== null) {
+      const fullMatch = match[0];
+      const citationNumber = parseInt(match[1] || "0", 10);
+      const matchIndex = match.index;
+
+      // Add text before the citation
+      if (matchIndex > lastIndex) {
+        parts.push(
+          <span key={`text-${lastIndex}`}>
+            {text.slice(lastIndex, matchIndex)}
+          </span>
+        );
+      }
+
+      // Add the citation as a clickable element
+      parts.push(
+        <sup key={`citation-${matchIndex}`}>
+          <button
+            onClick={() => handleCitationClick(citationNumber - 1)}
+            className="citation-link inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 mx-0.5 bg-blue-100 text-blue-700 rounded text-xs font-semibold hover:bg-blue-200 hover:text-blue-900 transition-colors cursor-pointer border border-blue-300"
+            aria-label={`View source ${citationNumber}`}
+          >
+            {citationNumber}
+          </button>
+        </sup>
+      );
+
+      lastIndex = matchIndex + fullMatch.length;
+    }
+
+    // Add remaining text after last citation
+    if (lastIndex < text.length) {
+      parts.push(<span key={`text-${lastIndex}`}>{text.slice(lastIndex)}</span>);
+    }
+
+    return parts;
+  };
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -70,6 +138,9 @@ export default function Home() {
                 setLoadingState("generating");
               } else if (parsed.type === "text") {
                 setAnswer((prev) => prev + parsed.content);
+              } else if (parsed.type === "done") {
+                // Stream completed successfully
+                break;
               } else if (parsed.type === "error") {
                 throw new Error(parsed.error || "Streaming error occurred");
               }
@@ -132,40 +203,69 @@ export default function Home() {
 
         {/* Sources Display */}
         {sources.length > 0 && (
-          <div className="mb-8">
-            <h2 className="text-xl font-semibold mb-4">Sources</h2>
-            <div className="grid gap-4">
-              {sources.map((source, index) => (
-                <div
-                  key={index}
-                  className="p-4 border border-gray-200 rounded-lg hover:shadow-md transition-shadow bg-white"
+          <div className="mb-8" ref={sourcesContainerRef}>
+            {!sourcesExpanded ? (
+              <div className="flex items-center gap-3">
+                <span className="px-3 py-1.5 bg-blue-50 text-blue-700 rounded-full text-sm font-medium">
+                  📚 {sources.length} source{sources.length !== 1 ? "s" : ""}
+                </span>
+                <button
+                  onClick={() => setSourcesExpanded(true)}
+                  className="text-sm text-blue-600 hover:text-blue-700 hover:underline font-medium"
                 >
-                  <div className="flex items-start gap-3">
-                    <span className="flex-shrink-0 w-6 h-6 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-sm font-medium">
-                      {index + 1}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <h3 className="font-medium text-gray-900 mb-1">
-                        {source.title}
-                      </h3>
-                      <a
-                        href={source.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-blue-600 hover:underline block mb-2 truncate"
-                      >
-                        {source.url}
-                      </a>
-                      <p className="text-sm text-gray-600">
-                        {source.content.length > 150
-                          ? `${source.content.slice(0, 150)}...`
-                          : source.content}
-                      </p>
-                    </div>
-                  </div>
+                  Show sources
+                </button>
+              </div>
+            ) : (
+              <div className="transition-all duration-300 ease-in-out">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl font-semibold">Sources</h2>
+                  <button
+                    onClick={() => setSourcesExpanded(false)}
+                    className="text-sm text-blue-600 hover:text-blue-700 hover:underline font-medium"
+                  >
+                    Hide sources
+                  </button>
                 </div>
-              ))}
-            </div>
+                <div className="grid gap-4">
+                  {sources.map((source, index) => (
+                    <div
+                      key={index}
+                      data-source-index={index}
+                      className={`p-4 border border-gray-200 rounded-lg hover:shadow-md transition-all bg-white ${
+                        highlightedSource === index
+                          ? "ring-2 ring-blue-500 shadow-lg"
+                          : ""
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <span className="flex-shrink-0 w-6 h-6 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-sm font-medium">
+                          {index + 1}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-medium text-gray-900 mb-1">
+                            {source.title}
+                          </h3>
+                          <a
+                            href={source.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-sm text-blue-600 hover:underline block mb-2 truncate"
+                          >
+                            {source.url}
+                          </a>
+                          <p className="text-sm text-gray-600">
+                            {source.content.length > 150
+                              ? `${source.content.slice(0, 150)}...`
+                              : source.content}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -183,7 +283,7 @@ export default function Home() {
             <h2 className="text-xl font-semibold mb-4">Answer</h2>
             <div className="prose prose-blue max-w-none p-6 bg-white border border-gray-200 rounded-lg">
               <p className="whitespace-pre-wrap text-gray-800 leading-relaxed">
-                {answer}
+                {renderAnswerWithCitations(answer)}
               </p>
             </div>
           </div>

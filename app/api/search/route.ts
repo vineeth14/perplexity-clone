@@ -3,6 +3,7 @@ import { streamText } from "ai";
 import { z } from "zod";
 
 import { getAIProvider } from "@/lib/ai-provider";
+import { processRawContent } from "@/lib/content-processor";
 import { searchTavily } from "@/lib/search";
 
 import type { APIError, SearchResult } from "@/types";
@@ -23,11 +24,12 @@ const searchRequestSchema = z.object({
 function buildContextPrompt(query: string, results: SearchResult[]): string {
   const sourcesContext = results
     .map((result, index) => {
-      return `[${index + 1}] ${result.title}\nURL: ${result.url}\nContent: ${result.content}\n`;
+      const contentToUse = result.fullContent || result.content;
+      return `[${index + 1}] ${result.title}\nURL: ${result.url}\nContent: ${contentToUse}\n`;
     })
     .join("\n");
 
-  return `You are a helpful AI assistant that answers questions based on provided search results.
+  return `You are a helpful AI assistant that provides concise, well-sourced answers based on search results.
 
 User Query: ${query}
 
@@ -35,11 +37,12 @@ Search Results:
 ${sourcesContext}
 
 Instructions:
-- Answer the user's query using ONLY the information from the search results above
+- Provide a CONCISE answer (2-3 sentences maximum) using ONLY the information from the search results above
 - Use inline citations in the format [1], [2], etc. to reference the sources
-- If the search results don't contain enough information, say so
-- Be concise but comprehensive
+- Use AT LEAST 2 citations if the sources contain similar or complementary information
+- If the search results don't contain enough information, state this briefly
 - Match citation numbers to the source numbers provided above
+- Keep your response brief and to the point
 
 Answer:`;
 }
@@ -86,6 +89,29 @@ export async function POST(request: NextRequest): Promise<Response> {
     let searchResults: SearchResult[];
     try {
       searchResults = await searchTavily(query);
+
+      // Process raw content for each result to create richer context
+      searchResults = searchResults.map((result) => {
+        try {
+          const fullContent = result.raw_content
+            ? processRawContent(result.raw_content)
+            : result.content;
+          return {
+            ...result,
+            fullContent,
+          };
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : "Unknown error occurred";
+          console.error(
+            `Failed to process raw_content for source "${result.title}". Error: ${errorMessage}. Falling back to snippet.`
+          );
+          return {
+            ...result,
+            fullContent: result.content,
+          };
+        }
+      });
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error occurred";
@@ -112,59 +138,203 @@ export async function POST(request: NextRequest): Promise<Response> {
     // Step 3: Build context prompt from search results
     const prompt = buildContextPrompt(query, searchResults);
 
-    // Step 4: Get AI provider and stream response
-    let aiProvider;
+    // Step 4: Stream AI response with sources prepended (using Gemini)
     try {
-      aiProvider = getAIProvider();
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : "Unknown error occurred";
-      return NextResponse.json(
-        {
-          error: "Failed to initialize AI provider",
-          details: errorMessage,
-        } as APIError,
-        { status: 500 }
-      );
-    }
+      const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+      const model = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
 
-    // Step 5: Stream AI response with sources prepended
-    try {
-      const result = await streamText({
-        model: aiProvider,
-        prompt,
-        temperature: 0.7,
-      });
+      if (!apiKey) {
+        throw new Error(
+          "GOOGLE_GENERATIVE_AI_API_KEY is not configured. Please add it to your .env.local file."
+        );
+      }
 
       // Create a custom stream that first sends sources, then the AI response
       const encoder = new TextEncoder();
       const customStream = new ReadableStream({
         async start(controller) {
-          // Send sources as the first chunk (as JSON)
-          const sourcesChunk = JSON.stringify({
-            type: "sources",
-            sources: searchResults,
-          });
-          controller.enqueue(encoder.encode(`data: ${sourcesChunk}\n\n`));
-
-          // Now stream the AI response
-          const reader = result.textStream.getReader();
           try {
+            // Send sources as the first chunk (as JSON)
+            const sourcesChunk = JSON.stringify({
+              type: "sources",
+              sources: searchResults,
+            });
+            controller.enqueue(encoder.encode(`data: ${sourcesChunk}\n\n`));
+
+            // Make direct fetch to Gemini
+            const response = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${apiKey}`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  contents: [
+                    {
+                      parts: [
+                        {
+                          text: prompt,
+                        },
+                      ],
+                    },
+                  ],
+                  generationConfig: {
+                    temperature: 0.7,
+                    maxOutputTokens: 500,
+                  },
+                }),
+              }
+            );
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              console.error("Gemini API error:", {
+                status: response.status,
+                statusText: response.statusText,
+                body: errorText,
+              });
+              throw new Error(
+                `Gemini API returned status ${response.status}: ${errorText}`
+              );
+            }
+
+            console.log("Gemini API response OK, starting to stream...");
+
+            if (!response.body) {
+              throw new Error("No response body from Gemini");
+            }
+
+            // Stream the response - Gemini returns formatted JSON array or NDJSON
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+
             while (true) {
               const { done, value } = await reader.read();
               if (done) break;
-              // Stream text chunks
-              const textChunk = JSON.stringify({
-                type: "text",
-                content: value,
-              });
-              controller.enqueue(encoder.encode(`data: ${textChunk}\n\n`));
+
+              buffer += decoder.decode(value, { stream: true });
+
+              // Try to extract complete JSON objects from the buffer
+              // Gemini may send: [{...},{...}] or {...}\n{...}\n
+              let processedSomething = true;
+              while (processedSomething && buffer.length > 0) {
+                processedSomething = false;
+                const trimmed = buffer.trimStart();
+
+                // Skip empty buffer
+                if (trimmed.length === 0) break;
+
+                // Handle array start
+                if (trimmed.startsWith('[')) {
+                  buffer = trimmed.substring(1);
+                  continue;
+                }
+
+                // Handle array end or trailing comma
+                if (trimmed.startsWith(']') || trimmed.startsWith(',')) {
+                  buffer = trimmed.substring(1);
+                  processedSomething = true;
+                  continue;
+                }
+
+                // Try to find a complete JSON object
+                if (trimmed.startsWith('{')) {
+                  let braceCount = 0;
+                  let inString = false;
+                  let escaped = false;
+                  let endIndex = -1;
+
+                  for (let i = 0; i < trimmed.length; i++) {
+                    const char = trimmed[i];
+
+                    if (escaped) {
+                      escaped = false;
+                      continue;
+                    }
+
+                    if (char === '\\') {
+                      escaped = true;
+                      continue;
+                    }
+
+                    if (char === '"') {
+                      inString = !inString;
+                      continue;
+                    }
+
+                    if (!inString) {
+                      if (char === '{') braceCount++;
+                      if (char === '}') {
+                        braceCount--;
+                        if (braceCount === 0) {
+                          endIndex = i + 1;
+                          break;
+                        }
+                      }
+                    }
+                  }
+
+                  if (endIndex > 0) {
+                    const jsonStr = trimmed.substring(0, endIndex);
+                    buffer = trimmed.substring(endIndex);
+                    processedSomething = true;
+
+                    try {
+                      const parsed = JSON.parse(jsonStr);
+
+                      // Check if there's an error in the response
+                      if (parsed.error) {
+                        console.error("Gemini returned an error:", parsed.error);
+                        throw new Error(parsed.error.message || "Gemini API error");
+                      }
+
+                      const content =
+                        parsed.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+                      if (content) {
+                        // Convert to SSE format for frontend
+                        const textChunk = JSON.stringify({
+                          type: "text",
+                          content,
+                        });
+                        controller.enqueue(
+                          encoder.encode(`data: ${textChunk}\n\n`)
+                        );
+                      }
+                    } catch (e) {
+                      if (e instanceof Error) {
+                        console.error("Failed to parse Gemini JSON object:", {
+                          json: jsonStr.substring(0, 200),
+                          error: e.message,
+                        });
+                      }
+                    }
+                  } else {
+                    // Incomplete object, wait for more data
+                    break;
+                  }
+                } else {
+                  // Unexpected format, skip this character
+                  buffer = trimmed.substring(1);
+                  processedSomething = true;
+                }
+              }
             }
+
+            // Send done signal when streaming completes successfully
+            const doneChunk = JSON.stringify({ type: "done" });
+            controller.enqueue(encoder.encode(`data: ${doneChunk}\n\n`));
           } catch (error) {
             const errorMessage =
               error instanceof Error
                 ? error.message
                 : "Unknown streaming error";
+            console.error("Streaming error details:", {
+              error: errorMessage,
+              stack: error instanceof Error ? error.stack : undefined,
+            });
             const errorChunk = JSON.stringify({
               type: "error",
               error: "Error while streaming AI response",
