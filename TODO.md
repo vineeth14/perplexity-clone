@@ -58,17 +58,19 @@ curl "http://localhost:3000/api/test-tavily?q=What+is+Next.js"
 
 ---
 
-## Phase 3: AI Provider Setup ⬜
+## Phase 3: AI Provider Setup ✅
 
 **Goal:** Flexible AI provider abstraction
 
 ### Tasks
 
-- [ ] Create `/lib/ai-provider.ts`
-  - [ ] `getAIProvider()` factory function
-  - [ ] Ollama support (OpenAI-compatible, default for testing)
-  - [ ] Gemini support (for production)
-  - [ ] Environment-based switching (AI_PROVIDER env var)
+- [x] Create `/lib/ai-provider.ts`
+  - [x] `getAIProvider()` factory function
+  - [x] Ollama support (OpenAI-compatible, default for testing)
+  - [x] Gemini support (for production)
+  - [x] Environment-based switching (AI_PROVIDER env var)
+- [x] Configure `.env.local` with Ollama settings (gemma2:2b model)
+- [x] Create `.env.example` with all required variables
 
 ### Verification Commands
 
@@ -76,30 +78,32 @@ curl "http://localhost:3000/api/test-tavily?q=What+is+Next.js"
 # Check Ollama is running
 curl http://localhost:11434/api/tags
 
-# Will provide test endpoint after implementation
+# Verify TypeScript compilation
+npm run build
 ```
 
 ### Success Criteria
 
-- ✓ Returns correct provider based on AI_PROVIDER env var
-- ✓ Ollama uses OpenAI-compatible endpoint
-- ✓ Gemini uses Google AI SDK
-- ✓ Fails gracefully with clear error if provider unavailable
+- ✅ Returns correct provider based on AI_PROVIDER env var
+- ✅ Ollama uses OpenAI-compatible endpoint
+- ✅ Gemini uses Google AI SDK
+- ✅ Fails gracefully with clear error if provider unavailable
+- ✅ TypeScript compiles without errors
 
 ---
 
-## Phase 4: API Route ⬜
+## Phase 4: API Route ✅
 
 **Goal:** Working search endpoint that streams AI responses
 
 ### Tasks
 
-- [ ] Create `/app/api/search/route.ts`
-  - [ ] POST handler with Zod validation
-  - [ ] Call `searchTavily()` and return sources
-  - [ ] Build context prompt from search results
-  - [ ] Stream AI response using Vercel AI SDK
-  - [ ] Verbose error handling at each step
+- [x] Create `/app/api/search/route.ts`
+  - [x] POST handler with Zod validation
+  - [x] Call `searchTavily()` and return sources
+  - [x] Build context prompt from search results
+  - [x] Stream AI response using Vercel AI SDK
+  - [x] Verbose error handling at each step
 
 ### Verification Commands
 
@@ -133,14 +137,32 @@ curl -X POST http://localhost:3000/api/search \
 
 ### Tasks
 
-- [ ] Update `/app/page.tsx` to Client Component
-  - [ ] Search input with submit handler
-  - [ ] Fetch to `/api/search` endpoint
-  - [ ] Display sources immediately (cards with title, URL, snippet)
-  - [ ] Stream AI response below sources
-  - [ ] Render inline citations [1], [2], etc.
-  - [ ] Loading states (searching, generating)
-  - [ ] Error display with details
+- [ ] Convert `/app/page.tsx` to Client Component
+  - [ ] Add "use client" directive
+  - [ ] Setup state: query, sources, answer, loading, error
+- [ ] Implement search input form
+  - [ ] Controlled input with onChange handler
+  - [ ] Submit handler to fetch `/api/search`
+  - [ ] Disable submit while processing
+- [ ] Parse SSE stream from API
+  - [ ] Use fetch() with manual SSE parsing
+  - [ ] Handle "sources" type → set sources state
+  - [ ] Handle "text" type → accumulate answer text
+  - [ ] Handle "error" type → display error
+- [ ] Display sources as cards
+  - [ ] Grid/list layout above answer
+  - [ ] Show title, URL, and snippet (truncated to ~150 chars)
+  - [ ] Make URLs clickable links
+- [ ] Stream AI answer display
+  - [ ] Render below sources
+  - [ ] Display citations [1], [2] inline (trust AI)
+  - [ ] Accumulate text token-by-token
+- [ ] Loading states
+  - [ ] "Searching..." while fetching sources
+  - [ ] "Generating answer..." while streaming
+- [ ] Error handling
+  - [ ] Inline error display below search input
+  - [ ] Clear errors on new search
 
 ### Verification Commands
 
@@ -166,12 +188,13 @@ open http://localhost:3000
 
 ### Success Criteria
 
-- ✓ Sources appear before AI response
-- ✓ AI response streams token by token
-- ✓ Citations [1], [2] match source indices
-- ✓ Source cards are clickable links
-- ✓ Loading states provide feedback
-- ✓ Errors display with helpful messages
+- ✓ Sources appear immediately after search
+- ✓ AI response streams smoothly token by token
+- ✓ Citations [1], [2] appear inline in answer
+- ✓ Source cards show title + URL + snippet
+- ✓ Loading states ("Searching..." → "Generating answer...")
+- ✓ Errors display inline with clear messages
+- ✓ Submit disabled during processing
 
 ---
 
