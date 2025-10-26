@@ -12,6 +12,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [sourcesExpanded, setSourcesExpanded] = useState(false);
   const [highlightedSource, setHighlightedSource] = useState<number | null>(null);
+  const [hoveredCitation, setHoveredCitation] = useState<number | null>(null);
   const sourcesContainerRef = useRef<HTMLDivElement>(null);
 
   const handleCitationClick = (citationIndex: number): void => {
@@ -57,14 +58,31 @@ export default function Home() {
 
       // Add the citation as a clickable element
       parts.push(
-        <sup key={`citation-${matchIndex}`}>
+        <sup key={`citation-${matchIndex}`} className="relative inline-block">
           <button
             onClick={() => handleCitationClick(citationNumber - 1)}
+            onMouseEnter={() => setHoveredCitation(citationNumber - 1)}
+            onMouseLeave={() => setHoveredCitation(null)}
             className="citation-link inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 mx-0.5 bg-blue-100 text-blue-700 rounded text-xs font-semibold hover:bg-blue-200 hover:text-blue-900 transition-colors cursor-pointer border border-blue-300"
             aria-label={`View source ${citationNumber}`}
           >
             {citationNumber}
           </button>
+          {hoveredCitation === citationNumber - 1 && (() => {
+            const source = sources[citationNumber - 1];
+            if (!source) return null;
+            return (
+              <div className="absolute z-50 bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-64 p-3 bg-gray-900 text-white text-xs rounded-lg shadow-lg pointer-events-none">
+                <div className="font-semibold mb-1 break-words">
+                  {source.title}
+                </div>
+                <div className="text-gray-300 break-all text-[10px]">
+                  {source.url}
+                </div>
+                <div className="absolute top-full left-1/2 transform -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900"></div>
+              </div>
+            );
+          })()}
         </sup>
       );
 
