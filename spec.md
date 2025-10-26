@@ -4,7 +4,7 @@
 TypeScript-based Perplexity clone: user submits query → fetch search results (Tavily) → AI generates response with citations → display sources + answer with inline citations [1], [2].
 
 ## Architecture & Structure
-- **Framework**: Next.js 14 App Router (TypeScript, React Server Components)
+- **Framework**: Next.js 16 App Router (TypeScript, React Server Components)
 - **AI Layer**: Vercel AI SDK with provider abstraction (Gemini default, OpenAI-compatible for Ollama)
 - **Search**: Tavily Search API (5-7 results per query)
 - **Structure**:
